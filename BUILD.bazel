@@ -1,9 +1,11 @@
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
 load("@bazel-erlang//:dialyze.bzl", "plt")
 load("@bazel-erlang//:shell.bzl", "shell")
 load("elixir_home.bzl", "elixir_home")
 load(":rabbitmq_home.bzl", "rabbitmq_home")
 load(":rabbitmq_run.bzl", "rabbitmq_run", "rabbitmq_run_command")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
+load(":rabbitmq.bzl", "APP_VERSION")
 
 exports_files([
     "scripts/bazel/rabbitmq-run.sh",
@@ -159,4 +161,14 @@ rabbitmqctl(
 shell(
     name = "repl",
     deps = ALL_PLUGINS,
+)
+
+pkg_tar(
+    name = "package-generic-unix",
+    srcs = [
+        ":broker-home",
+    ],
+    extension = "tar.xz",
+    package_dir = "rabbitmq_server-{}".format(APP_VERSION),
+    strip_prefix = "broker-home",
 )
