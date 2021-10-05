@@ -163,12 +163,47 @@ shell(
     deps = ALL_PLUGINS,
 )
 
+# Note that license-files is incomplete, as it does
+# not currently cover the deps
+pkg_tar(
+    name = "license-files",
+    srcs = glob(["LICENSE*"]),
+)
+
+pkg_tar(
+    name = "scripts",
+    srcs = [
+        "scripts/bash_autocomplete.sh",
+        "scripts/rabbitmq-script-wrapper",
+        "scripts/rabbitmq-server-ha.ocf",
+        "scripts/rabbitmq-server.ocf",
+        "scripts/rabbitmqctl-autocomplete.sh",
+        "scripts/zsh_autocomplete.sh",
+    ],
+    package_dir = "scripts",
+)
+
+pkg_tar(
+    name = "release-notes",
+    srcs = glob([
+        "release-notes/*.md",
+        "release-notes/*.txt",
+    ]),
+    package_dir = "release-notes",
+)
+
 pkg_tar(
     name = "package-generic-unix",
     srcs = [
         ":broker-home",
     ],
-    extension = "tar.xz",
     package_dir = "rabbitmq_server-{}".format(APP_VERSION),
     strip_prefix = "broker-home",
+    extension = "tar.xz",
+    deps = [
+        ":license-files",
+        ":scripts",
+        ":release-notes",
+    ],
+    visibility = ["//visibility:public"],
 )
