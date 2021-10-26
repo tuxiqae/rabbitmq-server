@@ -17,8 +17,8 @@
          add_client_id_to_adapter_info/2]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
--include("rabbit_mqtt_frame.hrl").
--include("rabbit_mqtt.hrl").
+-include_lib("rabbitmq_mqtt/include/rabbit_mqtt_frame.hrl").
+-include_lib("rabbitmq_mqtt/include/rabbit_mqtt.hrl").
 
 -define(APP, rabbitmq_mqtt).
 -define(FRAME_TYPE(Frame, Type),
@@ -65,10 +65,14 @@ process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
   when Type =/= ?CONNECT ->
     {error, connect_expected, PState};
 process_frame(Frame = #mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
-              PState) ->
-    case process_request(Type, Frame, PState) of
+              #proc_state{connection = Conn} = PState) ->
+    try process_request(Type, Frame, PState) of
         {ok, PState1} -> {ok, PState1, PState1#proc_state.connection};
         Ret -> Ret
+    catch
+        _:{{shutdown, {server_initiated_close, 403, _}}, _} ->
+            %% Error was already logged by AMQP channel, no need for custom logging.
+            {error, access_refused, PState}
     end.
 
 add_client_id_to_adapter_info(ClientId, #amqp_adapter_info{additional_info = AdditionalInfo0} = AdapterInfo) ->
@@ -110,7 +114,7 @@ process_request(?CONNECT,
     PState1 = PState0#proc_state{adapter_info = AdapterInfo1},
     Ip = list_to_binary(inet:ntoa(Addr)),
     {Return, PState5} =
-        case {lists:member(ProtoVersion, proplists:get_keys(?PROTOCOL_NAMES)),
+        try {lists:member(ProtoVersion, proplists:get_keys(?PROTOCOL_NAMES)),
               ClientId0 =:= [] andalso CleanSess =:= false} of
             {false, _} ->
                 {?CONNACK_PROTO_VER, PState1};
@@ -175,6 +179,10 @@ process_request(?CONNECT,
                             ConnAck -> {ConnAck, PState1}
                         end
                 end
+        catch
+            exit:({{shutdown, {server_initiated_close, 403, _}}, _}) ->
+                rabbit_log:error("CONVERTING TO CONNACK_AUTH"),
+                {?CONNACK_AUTH, PState1}
         end,
     {ReturnCode, SessionPresent} = case Return of
                                        {?CONNACK_ACCEPT, Bool} -> {?CONNACK_ACCEPT, Bool};
@@ -498,13 +506,32 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         client_id  = ClientId }) ->
     {_, Queue} = rabbit_mqtt_util:subcription_queue_name(ClientId),
     {ok, Channel} = amqp_connection:open_channel(Conn),
-    ok = try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
-             #'queue.delete_ok'{} -> ok
-         catch
-             exit:_Error -> ok
-         after
-             amqp_channel:close(Channel)
-         end,
+
+    %% We can't just put `amqp_channel:close/1` in `after`, as it'll
+    %% throw an exception when connections was closed due to a
+    %% permission error.
+    ok =
+        try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
+            #'queue.delete_ok'{} -> ok
+        catch
+            exit:({{shutdown, {server_initiated_close, 403, _}}, _} = E):S ->
+                %% There is some funny race in there, when not-yet-fully
+                %% shutdown AMQP connection supervision tree detects that
+                %% MQTT connection prematurely exits, and prints a crash report.
+                rabbit_log:error("MCS ACC ~p", [Conn]),
+                catch amqp_connection:close(Conn),
+                erlang:raise(exit, E, S);
+            exit:_E ->
+                %% I don't know which exceptions this covers, but this
+                %% was the behaviour of the previous version of this
+                %% code
+                amqp_channel:close(Channel),
+                ok;
+            C:E:S ->
+                %% Unrolled `after` for the rest of the cases
+                amqp_channel:close(Channel),
+                erlang:raise(C, E, S)
+        end,
     {false, PState}.
 
 session_present(Conn, ClientId)  ->
