@@ -742,6 +742,7 @@ overview(#?MODULE{consumers = Cons,
       num_checked_out => num_checked_out(State),
       num_enqueuers => maps:size(Enqs),
       num_ready_messages => messages_ready(State),
+      num_pending_messages => messages_pending(State),
       num_messages => messages_total(State),
       num_release_cursors => lqueue:len(Cursors),
       release_cursors => [I || {_, I, _} <- lqueue:to_list(Cursors)],
@@ -1010,6 +1011,11 @@ usage(Name) when is_atom(Name) ->
     end.
 
 %%% Internal
+
+messages_pending(#?MODULE{enqueuers = Enqs}) ->
+    maps:fold(fun(_, #enqueuer{pending = P}, Acc) ->
+                      length(P) + Acc
+              end, 0, Enqs).
 
 messages_ready(#?MODULE{messages = M,
                         prefix_msgs = {RCnt, _R, PCnt, _P},

@@ -584,12 +584,14 @@ handle_ra_event(_, {machine, {queue_status, Status}},
 handle_ra_event(Leader, {machine, leader_change},
                 #state{leader = Leader} = State) ->
     %% leader already known
+    rabbit_log:debug("leader change already known ~w", [Leader]),
     {ok, State, []};
 handle_ra_event(Leader, {machine, leader_change}, State0) ->
     %% we need to update leader
     %% and resend any pending commands
+    rabbit_log:debug("leader change new leader ~w", [Leader]),
     State = resend_all_pending(State0#state{leader = Leader}),
-    {ok, State, []};
+    {ok, cancel_timer(State), []};
 handle_ra_event(_From, {rejected, {not_leader, undefined, _Seq}}, State0) ->
     % TODO: how should these be handled? re-sent on timer or try random
     {ok, State0, []};
@@ -697,6 +699,8 @@ resend(OldSeq, #state{pending = Pending0, leader = Leader} = State) ->
     end.
 
 resend_all_pending(#state{pending = Pend} = State) ->
+
+    rabbit_log:debug("channel resending ~w ", [map_size(Pend)]),
     Seqs = lists:sort(maps:keys(Pend)),
     lists:foldl(fun resend/2, State, Seqs).
 
