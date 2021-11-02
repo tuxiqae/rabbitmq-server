@@ -1307,8 +1307,9 @@ maybe_enqueue(RaftIdx, From, MsgSeqNo, RawMsg, Effects0,
         #enqueuer{next_seqno = Next,
                   pending = Pending0} = Enq0
           when MsgSeqNo > Next ->
-            % out of order delivery
+            % out of order enqueue
             Pending = [{MsgSeqNo, RaftIdx, RawMsg} | Pending0],
+            %% TODO: should use lists:usort/1 or we may add duplicates?
             Enq = Enq0#enqueuer{pending = lists:sort(Pending)},
             {ok, State0#?MODULE{enqueuers = Enqueuers0#{From => Enq}}, Effects0};
         #enqueuer{next_seqno = Next} when MsgSeqNo =< Next ->
