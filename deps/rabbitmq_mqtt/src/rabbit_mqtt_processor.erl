@@ -114,7 +114,7 @@ process_request(?CONNECT,
     PState1 = PState0#proc_state{adapter_info = AdapterInfo1},
     Ip = list_to_binary(inet:ntoa(Addr)),
     {Return, PState5} =
-        try {lists:member(ProtoVersion, proplists:get_keys(?PROTOCOL_NAMES)),
+        case {lists:member(ProtoVersion, proplists:get_keys(?PROTOCOL_NAMES)),
               ClientId0 =:= [] andalso CleanSess =:= false} of
             {false, _} ->
                 {?CONNACK_PROTO_VER, PState1};
@@ -137,8 +137,7 @@ process_request(?CONNECT,
                     {UserBin, PassBin} ->
                         case process_login(UserBin, PassBin, ProtoVersion, PState1) of
                             connack_dup_auth ->
-                                {SessionPresent0, PState2} = maybe_clean_sess(PState1),
-                                {{?CONNACK_ACCEPT, SessionPresent0}, PState2};
+                                maybe_clean_sess(PState1);
                             {?CONNACK_ACCEPT, Conn, VHost, AState} ->
                                 case rabbit_mqtt_collector:register(ClientId, self()) of
                                     {ok, Corr} ->
@@ -160,8 +159,7 @@ process_request(?CONNECT,
                                                 retainer_pid = RetainerPid,
                                                 auth_state = AState,
                                                 register_state = {pending, Corr}},
-                                    {SessionPresent1, PState4} = maybe_clean_sess(PState3),
-                                    {{?CONNACK_ACCEPT, SessionPresent1}, PState4};
+                                    maybe_clean_sess(PState3);
                                   %% e.g. this node was removed from the MQTT cluster members
                                   {error, _} = Err ->
                                     rabbit_log_connection:error("MQTT cannot accept a connection: "
@@ -179,10 +177,6 @@ process_request(?CONNECT,
                             ConnAck -> {ConnAck, PState1}
                         end
                 end
-        catch
-            exit:({{shutdown, {server_initiated_close, 403, _}}, _}) ->
-                rabbit_log:error("CONVERTING TO CONNACK_AUTH"),
-                {?CONNACK_AUTH, PState1}
         end,
     {ReturnCode, SessionPresent} = case Return of
                                        {?CONNACK_ACCEPT, Bool} -> {?CONNACK_ACCEPT, Bool};
@@ -500,7 +494,7 @@ maybe_clean_sess(PState = #proc_state { clean_sess = false,
                                         client_id  = ClientId }) ->
     SessionPresent = session_present(Conn, ClientId),
     {_Queue, PState1} = ensure_queue(?QOS_1, PState),
-    {SessionPresent, PState1};
+    {{?CONNACK_ACCEPT, SessionPresent}, PState1};
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         connection = Conn,
                                         client_id  = ClientId }) ->
@@ -510,29 +504,29 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
     %% We can't just put `amqp_channel:close/1` in `after`, as it'll
     %% throw an exception when connections was closed due to a
     %% permission error.
-    ok =
-        try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
-            #'queue.delete_ok'{} -> ok
-        catch
-            exit:({{shutdown, {server_initiated_close, 403, _}}, _} = E):S ->
-                %% There is some funny race in there, when not-yet-fully
-                %% shutdown AMQP connection supervision tree detects that
-                %% MQTT connection prematurely exits, and prints a crash report.
-                rabbit_log:error("MCS ACC ~p", [Conn]),
-                catch amqp_connection:close(Conn),
-                erlang:raise(exit, E, S);
-            exit:_E ->
-                %% I don't know which exceptions this covers, but this
-                %% was the behaviour of the previous version of this
-                %% code
-                amqp_channel:close(Channel),
-                ok;
-            C:E:S ->
-                %% Unrolled `after` for the rest of the cases
-                amqp_channel:close(Channel),
-                erlang:raise(C, E, S)
-        end,
-    {false, PState}.
+    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
+        #'queue.delete_ok'{} -> {{?CONNACK_ACCEPT, false}, PState}
+    catch
+        exit:({{shutdown, {server_initiated_close, 403, _}}, _} = E):S ->
+            %% There is some funny race in there, when not-yet-fully
+            %% shutdown AMQP connection supervision tree detects that
+            %% MQTT connection prematurely exits, and prints a crash report.
+            rabbit_log:error("MCS ACC ~p", [Conn]),
+            catch amqp_connection:close(Conn),
+            rabbit_log:error("MCS ERR ~p", [{exit, E, S}]),
+            {?CONNACK_AUTH, PState};
+        exit:_E ->
+            %% XXX I don't know which exceptions this covers, but this
+            %% was the behaviour of the previous version of this
+            %% code (was it for "queue doesn't exist"?)
+            amqp_channel:close(Channel),
+            {{?CONNACK_ACCEPT, false}, PState};
+        C:E:S ->
+            %% Unrolled `after` for the rest of the cases
+            amqp_channel:close(Channel),
+            erlang:raise(C, E, S)
+    end.
+
 
 session_present(Conn, ClientId)  ->
     {_, QueueQ1} = rabbit_mqtt_util:subcription_queue_name(ClientId),

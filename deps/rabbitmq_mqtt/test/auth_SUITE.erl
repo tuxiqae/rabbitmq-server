@@ -64,7 +64,7 @@ groups() ->
      {authz_handling, [],
       [no_queue_bind_permission,
        no_queue_consume_permission,
-       no_queue_declare_permission]
+       no_queue_delete_permission]
      }
     ].
 
@@ -142,6 +142,8 @@ auth_config(client_id_propagation) ->
 auth_config(_) ->
     undefined.
 
+%% init_per_testcase(no_queue_delete_permission, _) ->
+%%     {skip, "Refactor later"};
 init_per_testcase(Testcase, Config) when Testcase == ssl_user_auth_success;
                                          Testcase == ssl_user_auth_failure ->
     Config1 = set_cert_user_on_default_vhost(Config),
@@ -309,7 +311,7 @@ end_per_testcase(ssl_user_port_vhost_mapping_takes_precedence_over_cert_vhost_ma
     rabbit_ct_helpers:testcase_finished(Config, ssl_user_port_vhost_mapping_takes_precedence_over_cert_vhost_mapping);
 end_per_testcase(Testcase, Config) when Testcase == no_queue_bind_permission;
                                         Testcase == no_queue_consume_permission;
-                                        Testcase == no_queue_declare_permission ->
+                                        Testcase == no_queue_delete_permission ->
     %% So let's wait before logs are surely flushed
     Marker = "MQTT_AUTH_SUITE_MARKER",
     rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_log, error, [Marker]),
@@ -513,9 +515,27 @@ no_queue_consume_permission(Config) ->
     test_subscribe_permissions_combination(<<".*">>, <<".*">>, <<"^amq\\.topic">>, Config,
                                            ["operation basic.consume caused a channel exception access_refused"]).
 
-no_queue_declare_permission(Config) ->
-    test_subscribe_permissions_combination(<<>>, <<".*">>, <<".*">>, Config,
-                                           ["operation queue.declare caused a channel exception access_refused"]).
+no_queue_delete_permission(Config) ->
+    rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), <<>>, <<".*">>, <<".*">>),
+
+    process_flag(trap_exit, true),
+    {ok, _} = connect_user(?config(mqtt_user, Config), ?config(mqtt_password, Config), Config),
+    receive
+        {'EXIT', _, {shutdown,{connack_error,'CONNACK_AUTH'}}} ->
+            ok
+    after 1000 ->
+            exit(authorization_should_fail)
+    end,
+    wait_log(Config, erlang:system_time(microsecond) + 1000000,
+             [{["Generic server.*terminating"], fun () -> exit(there_should_be_no_crashes) end}
+             ,{["MQTT connection.*is closing due to an authorization failure",
+               "operation queue.delete caused a channel exception access_refused"],
+               fun () -> stop end}
+             ]),
+    ok.
+
+    %% test_subscribe_permissions_combination(Config,
+    %%                                        ["operation queue.delete caused a channel exception access_refused"]).
 
 test_subscribe_permissions_combination(PermConf, PermWrite, PermRead, Config, ExtraLogChecks) ->
     rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), PermConf, PermWrite, PermRead),
