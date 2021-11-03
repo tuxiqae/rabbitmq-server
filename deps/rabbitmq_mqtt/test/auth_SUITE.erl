@@ -517,15 +517,9 @@ no_queue_consume_permission(Config) ->
 
 no_queue_delete_permission(Config) ->
     rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), <<>>, <<".*">>, <<".*">>),
-
-    process_flag(trap_exit, true),
-    {ok, _} = connect_user(?config(mqtt_user, Config), ?config(mqtt_password, Config), Config),
-    receive
-        {'EXIT', _, {shutdown,{connack_error,'CONNACK_AUTH'}}} ->
-            ok
-    after 1000 ->
-            exit(authorization_should_fail)
-    end,
+    expect_authentication_failure(fun (C) ->
+                                          connect_user(?config(mqtt_user, C), ?config(mqtt_password, C), C)
+                                  end, Config),
     wait_log(Config, erlang:system_time(microsecond) + 1000000,
              [{["Generic server.*terminating"], fun () -> exit(there_should_be_no_crashes) end}
              ,{["MQTT connection.*is closing due to an authorization failure",
@@ -533,6 +527,8 @@ no_queue_delete_permission(Config) ->
                fun () -> stop end}
              ]),
     ok.
+
+%% no_queue_declare_permission(Config) ->
 
     %% test_subscribe_permissions_combination(Config,
     %%                                        ["operation queue.delete caused a channel exception access_refused"]).
