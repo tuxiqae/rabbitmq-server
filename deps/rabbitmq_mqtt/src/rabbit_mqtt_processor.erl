@@ -501,24 +501,15 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
     {_, Queue} = rabbit_mqtt_util:subcription_queue_name(ClientId),
     {ok, Channel} = amqp_connection:open_channel(Conn),
 
-    %% We can't just put `amqp_channel:close/1` in `after`, as it'll
-    %% throw an exception when connections was closed due to a
-    %% permission error.
     try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
         #'queue.delete_ok'{} -> {{?CONNACK_ACCEPT, false}, PState}
     catch
-        exit:({{shutdown, {server_initiated_close, 403, _}}, _} = E):S ->
-            %% There is some funny race in there, when not-yet-fully
-            %% shutdown AMQP connection supervision tree detects that
-            %% MQTT connection prematurely exits, and prints a crash report.
-            rabbit_log:error("MCS ACC ~p", [Conn]),
+        exit:({{shutdown, {server_initiated_close, 403, _}}, _}) ->
             catch amqp_connection:close(Conn),
-            rabbit_log:error("MCS ERR ~p", [{exit, E, S}]),
-            {?CONNACK_AUTH, PState};
+            rabbit_log_connection:error("MQTT cannot accept a connection: "
+                                        "`configure` permission missing for queue `~p`", [Queue]),
+            {?CONNACK_SERVER, PState};
         exit:_E ->
-            %% XXX I don't know which exceptions this covers, but this
-            %% was the behaviour of the previous version of this
-            %% code (was it for "queue doesn't exist"?)
             amqp_channel:close(Channel),
             {{?CONNACK_ACCEPT, false}, PState};
         C:E:S ->

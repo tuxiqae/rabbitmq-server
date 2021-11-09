@@ -516,14 +516,27 @@ no_queue_consume_permission(Config) ->
                                            ["operation basic.consume caused a channel exception access_refused"]).
 
 no_queue_delete_permission(Config) ->
+    %% Initiating clean session can fail due to missing `configure` permission for subscription queue
     rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), <<>>, <<".*">>, <<".*">>),
-    expect_authentication_failure(fun (C) ->
-                                          connect_user(?config(mqtt_user, C), ?config(mqtt_password, C), C)
-                                  end, Config),
+
+    process_flag(trap_exit, true),
+    {ok, C} = connect_user(?config(mqtt_user, Config), ?config(mqtt_password, Config), Config),
+    Result = receive
+        {mqttc, C, connected} -> {error, unexpected_anonymous_connection};
+        {'EXIT', C, {shutdown,{connack_error,'CONNACK_SERVER'}}} -> ok;
+        {'EXIT', C, {shutdown, Err}} -> {error, unexpected_error, Err}
+    after
+        ?CONNECT_TIMEOUT -> {error, emqttc_connection_timeout}
+    end,
+    process_flag(trap_exit, false),
+    case Result of
+        ok -> ok;
+        {error, E} -> exit(E)
+    end,
     wait_log(Config, erlang:system_time(microsecond) + 1000000,
              [{["Generic server.*terminating"], fun () -> exit(there_should_be_no_crashes) end}
-             ,{["MQTT connection.*is closing due to an authorization failure",
-               "operation queue.delete caused a channel exception access_refused"],
+             ,{["operation queue.delete caused a channel exception access_refused",
+                "MQTT cannot accept a connection: `configure` permission missing for queue"],
                fun () -> stop end}
              ]),
     ok.
