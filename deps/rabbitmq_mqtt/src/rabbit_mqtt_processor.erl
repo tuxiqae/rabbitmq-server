@@ -493,8 +493,7 @@ maybe_clean_sess(PState = #proc_state { clean_sess = false,
                                         auth_state = #auth_state{vhost = VHost},
                                         client_id  = ClientId }) ->
     SessionPresent = session_present(VHost, ClientId),
-    {_Queue, PState1} = ensure_queue(?QOS_1, PState),
-    {{?CONNACK_ACCEPT, SessionPresent}, PState1};
+    {{?CONNACK_ACCEPT, SessionPresent}, PState};
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         connection = Conn,
                                         client_id  = ClientId }) ->
@@ -505,6 +504,7 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
         #'queue.delete_ok'{} -> {{?CONNACK_ACCEPT, false}, PState}
     catch
         exit:({{shutdown, {server_initiated_close, 403, _}}, _}) ->
+            %% Connection is not yet propagated to #proc_state{}, let's close it here
             catch amqp_connection:close(Conn),
             rabbit_log_connection:error("MQTT cannot accept a connection: "
                                         "`configure` permission missing for queue `~p`", [Queue]),

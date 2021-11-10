@@ -64,7 +64,8 @@ groups() ->
      {authz_handling, [],
       [no_queue_bind_permission,
        no_queue_consume_permission,
-       no_queue_delete_permission]
+       no_queue_delete_permission,
+       no_queue_declare_permission]
      }
     ].
 
@@ -541,10 +542,42 @@ no_queue_delete_permission(Config) ->
              ]),
     ok.
 
-%% no_queue_declare_permission(Config) ->
+no_queue_declare_permission(Config) ->
+    rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), <<"">>, <<".*">>, <<".*">>),
+    P = rabbit_ct_broker_helpers:get_node_config(Config, 0, tcp_port_mqtt),
+    {ok, C} = emqttc:start_link([{host, "localhost"},
+                                 {port, P},
+                                 {client_id, <<"no_queue_declare_permission">>},
+                                 {proto_ver, 3},
+                                 {logger, info},
+                                 {username, ?config(mqtt_user, Config)},
+                                 {password, ?config(mqtt_password, Config)},
+                                 {clean_sess, false}
+                                ]),
 
-    %% test_subscribe_permissions_combination(Config,
-    %%                                        ["operation queue.delete caused a channel exception access_refused"]).
+    receive
+        {mqttc, _, connected} -> ok
+    after
+        ?CONNECT_TIMEOUT -> exit(emqttc_connection_timeout)
+    end,
+
+    process_flag(trap_exit, true),
+    try emqttc:sync_subscribe(C, <<"test/topic">>) of
+        _ -> exit(this_should_not_succeed)
+    catch
+        exit:{{shutdown, tcp_closed} , _} -> ok
+    end,
+
+    process_flag(trap_exit, false),
+
+    wait_log(Config, erlang:system_time(microsecond) + 1000000,
+             [{["Generic server.*terminating"], fun () -> exit(there_should_be_no_crashes) end}
+             ,{["MQTT protocol error on connection.*access_refused",
+                "operation queue.declare caused a channel exception access_refused"],
+               fun () -> stop end}
+             ]),
+    ok.
+
 
 test_subscribe_permissions_combination(PermConf, PermWrite, PermRead, Config, ExtraLogChecks) ->
     rabbit_ct_broker_helpers:set_permissions(Config, ?config(mqtt_user, Config), ?config(mqtt_vhost, Config), PermConf, PermWrite, PermRead),
